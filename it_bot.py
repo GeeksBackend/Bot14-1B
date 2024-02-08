@@ -1,10 +1,25 @@
 from aiogram import Bot, Dispatcher, types, executor
+from aiogram.dispatcher.storage import FSMContext
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.dispatcher.filters.state import State, StatesGroup
 from config import token 
-import logging
+import logging, sqlite3, time
 
 bot = Bot(token=token)
-dp = Dispatcher(bot)
+storage = MemoryStorage()
+dp = Dispatcher(bot, storage=storage)
 logging.basicConfig(level=logging.INFO)
+
+connection = sqlite3.connect('itbot.db')
+cursor = connection.cursor()
+cursor.execute("""CREATE TABLE IF NOT EXISTS users(
+    id VARCHAR(255),
+    first_name VARCHAR(255),        
+    last_name VARCHAR(255),        
+    username VARCHAR(255),        
+    created VARCHAR(255)      
+);
+""")
 
 start_buttons = [
     types.KeyboardButton('О нас'),
@@ -16,6 +31,14 @@ start_keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True).add(*start_butt
 
 @dp.message_handler(commands='start')
 async def start(message:types.Message):
+    cursor.execute(f"SELECT id FROM users WHERE id = {message.from_user.id};")
+    result = cursor.fetchall()
+    print(result)
+    if result == []:
+        cursor.execute(f"INSERT INTO users VALUES (?, ?, ?, ?, ?)",
+                       (message.from_user.id, message.from_user.first_name,
+                        message.from_user.last_name, message.from_user.username, time.ctime()))
+        cursor.connection.commit()
     await message.answer(f"Здраствуйте {message.from_user.full_name}", reply_markup=start_keyboard)
 
 @dp.message_handler(text="О нас")
@@ -64,6 +87,59 @@ async def ios(message:types.Message):
 @dp.message_handler(text='Назад')
 async def rollback(message:types.Message):
     await start(message)
+
+class ApplicationState(StatesGroup):
+    first_name = State()
+    last_name = State()
+    phone = State()
+    direction = State()
+    note = State()
+
+@dp.message_handler(text="Отправить заявку")
+async def get_lids(message:types.Message):
+    await message.answer("Для оставления заявку на курс вам необходимо ввести следующие данные:")
+    await message.answer("Имя, Фамиля, Номер, Направление, Примечание (если есть)")
+    await message.answer("Введите имя:")
+    await ApplicationState.first_name.set()
+
+@dp.message_handler(state=ApplicationState.first_name)
+async def get_last_name(message:types.Message, state:FSMContext):
+    await state.update_data(first_name=message.text)
+    await message.answer("Введите фамилию:")
+    await ApplicationState.last_name.set()
+
+@dp.message_handler(state=ApplicationState.last_name)
+async def get_phone(message:types.Message, state:FSMContext):
+    await state.update_data(last_name=message.text)
+    await message.answer("Введите номер")
+    await ApplicationState.phone.set()
+
+@dp.message_handler(state=ApplicationState.phone)
+async def get_direction(message:types.Message, state:FSMContext):
+    await state.update_data(phone=message.text)
+    await message.answer("Введите направление", reply_markup=courses_keyboard)
+    await ApplicationState.direction.set()
+
+@dp.message_handler(state=ApplicationState.direction)
+async def get_note(message:types.Message, state:FSMContext):
+    await state.update_data(direction=message.text)
+    await message.answer("Примерчание (если есть)")
+    await ApplicationState.note.set()
+
+@dp.message_handler(state=ApplicationState.note)
+async def send_application(message:types.Message, state:FSMContext):
+    await state.update_data(note=message.text)
+    await message.answer("Все данные записаны")
+    result = await storage.get_data(user=message.from_user.id)
+    send_message = f"""Заявка на курсы {time.ctime()}
+Имя: {result['first_name']}
+Фамилия: {result['last_name']}
+Номер: {result['phone']}
+Направление: {result['direction']}
+Примечание: {result['note']}
+Дата: {time.ctime()}"""
+    await message.answer(f"{send_message}")
+    await bot.send_message(-4142647964, f"{send_message}")
 
 @dp.message_handler()
 async def not_found(message:types.Message):
